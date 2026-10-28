@@ -1,0 +1,3 @@
+---
+# Update deliberately after reviewing release notes and backing up Headscale state.
+headscale_version: '0.29.6'
