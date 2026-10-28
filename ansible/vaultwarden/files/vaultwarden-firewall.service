@@ -1,0 +1,13 @@
+[Unit]
+Description=Vaultwarden ingress firewall (preserves Docker and Tailscale tables)
+After=network-online.target tailscaled.service docker.service
+Wants=network-online.target
+Requires=tailscaled.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/vaultwarden-firewall
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

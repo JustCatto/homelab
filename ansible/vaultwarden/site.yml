@@ -1,0 +1,359 @@
+---
+- name: Configure Vaultwarden host
+  hosts: vaultwarden
+  become: true
+  gather_facts: true
+  vars_files:
+    - secrets.yml
+  vars:
+    tailscale_udp_port: 41641
+
+  pre_tasks:
+    - name: Validate deployment settings
+      ansible.builtin.assert:
+        that:
+          - vaultwarden_domain is defined
+          - vaultwarden_domain is match('^[a-zA-Z0-9.-]+$')
+          - vaultwarden_admin_token is defined
+          - vaultwarden_admin_token.startswith('$argon2id$')
+          - headscale_url is defined
+          - headscale_url is match('^https://')
+          - headscale_auth_key is defined
+          - headscale_auth_key | length > 0
+        fail_msg: "Provide vaultwarden_domain, an Argon2id admin hash, headscale_url and headscale_auth_key in your untracked secrets.yml."
+      no_log: true
+
+  tasks:
+    - name: Install host prerequisites and Fail2ban
+      ansible.builtin.apt:
+        name:
+          - ca-certificates
+          - curl
+          - iproute2
+          - python3-apt
+          - python3-debian
+          - python3-systemd
+          - fail2ban
+          - nftables
+        state: present
+        update_cache: true
+
+    - name: Create APT keyrings directory
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: '0755'
+
+    - name: Download Tailscale repository signing key
+      ansible.builtin.get_url:
+        url: "https://pkgs.tailscale.com/stable/debian/{{ ansible_facts['distribution_release'] }}.noarmor.gpg"
+        dest: /etc/apt/keyrings/tailscale.gpg
+        mode: '0644'
+
+    - name: Add Tailscale's official Debian repository
+      ansible.builtin.deb822_repository:
+        name: tailscale
+        types: [deb]
+        uris: https://pkgs.tailscale.com/stable/debian
+        suites: "{{ ansible_facts['distribution_release'] }}"
+        components: [main]
+        signed_by: /etc/apt/keyrings/tailscale.gpg
+        state: present
+
+    - name: Install Tailscale
+      ansible.builtin.apt:
+        name: tailscale
+        state: present
+        update_cache: true
+
+    - name: Start tailscaled
+      ansible.builtin.service:
+        name: tailscaled
+        enabled: true
+        state: started
+
+    - name: Inspect existing Tailscale state
+      ansible.builtin.command: tailscale status --json
+      register: tailscale_status
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+    - name: Enrol in Headscale only if not already connected
+      ansible.builtin.command:
+        argv:
+          - tailscale
+          - up
+          - "--login-server={{ headscale_url }}"
+          - "--auth-key={{ headscale_auth_key }}"
+          - --hostname=vaultwarden
+          - --accept-dns=false
+          - --timeout=90s
+      when: tailscale_status.rc != 0 or (tailscale_status.stdout | from_json).BackendState != 'Running'
+      no_log: true
+
+    - name: Wait for Headscale connectivity
+      ansible.builtin.command: tailscale status --json
+      register: tailscale_connected
+      changed_when: false
+      until: tailscale_connected.rc == 0 and (tailscale_connected.stdout | from_json).BackendState == 'Running'
+      retries: 12
+      delay: 5
+      no_log: true
+
+    - name: Enforce hostname and disable tailnet DNS on existing nodes without re-enrolling
+      ansible.builtin.command: tailscale set --hostname=vaultwarden --accept-dns=false
+      changed_when: false
+
+    - name: Retrieve assigned Tailscale IPv4
+      ansible.builtin.command: tailscale ip -4
+      register: tailscale_ip
+      changed_when: false
+      until: tailscale_ip.rc == 0 and (tailscale_ip.stdout | trim | length) > 0
+      retries: 12
+      delay: 5
+
+    - name: Store and validate assigned Tailscale IPv4
+      ansible.builtin.set_fact:
+        tailscale_ipv4: "{{ tailscale_ip.stdout | trim }}"
+
+    - name: Validate Tailscale IPv4 format
+      ansible.builtin.assert:
+        that:
+          - tailscale_ipv4 is match('^[0-9]{1,3}(\\.[0-9]{1,3}){3}$')
+
+    - name: Confirm tailscaled is listening on the allowed WireGuard UDP port
+      ansible.builtin.command: ss --numeric --udp --listening --processes
+      register: tailscale_sockets
+      changed_when: false
+      failed_when: "tailscale_sockets.stdout is not search(':' ~ (tailscale_udp_port | string) ~ '\\s+.*tailscaled')"
+
+    - name: Download Docker repository signing key
+      ansible.builtin.get_url:
+        url: https://download.docker.com/linux/debian/gpg
+        dest: /etc/apt/keyrings/docker.asc
+        mode: '0644'
+
+    - name: Get Debian package architecture
+      ansible.builtin.command: dpkg --print-architecture
+      register: docker_arch
+      changed_when: false
+
+    - name: Add Docker's official Debian repository
+      ansible.builtin.deb822_repository:
+        name: docker
+        types: [deb]
+        uris: https://download.docker.com/linux/debian
+        suites: "{{ ansible_facts['distribution_release'] }}"
+        components: [stable]
+        architectures: ["{{ docker_arch.stdout }}"]
+        signed_by: /etc/apt/keyrings/docker.asc
+        state: present
+
+    - name: Install Docker Engine and Compose plugin
+      ansible.builtin.apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-buildx-plugin
+          - docker-compose-plugin
+        state: present
+        update_cache: true
+
+    - name: Start Docker
+      ansible.builtin.service:
+        name: docker
+        enabled: true
+        state: started
+
+    - name: Configure SSH brute-force protection
+      ansible.builtin.copy:
+        src: files/sshd.local
+        dest: /etc/fail2ban/jail.d/sshd.local
+        owner: root
+        group: root
+        mode: '0644'
+      notify: Restart Fail2ban
+
+    - name: Start Fail2ban
+      ansible.builtin.service:
+        name: fail2ban
+        enabled: true
+        state: started
+
+    - name: Create deployment directory
+      ansible.builtin.file:
+        path: /opt/vaultwarden
+        state: directory
+        owner: root
+        group: root
+        mode: '0700'
+
+    - name: Create Vaultwarden persistent data directory for unprivileged UID 1000
+      ansible.builtin.file:
+        path: /opt/vaultwarden/data
+        state: directory
+        owner: '1000'
+        group: '1000'
+        mode: '0700'
+
+    - name: Create nftables rules directory
+      ansible.builtin.file:
+        path: /etc/nftables.d
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Render private-site firewall rules
+      ansible.builtin.template:
+        src: templates/vaultwarden.nft.j2
+        dest: /etc/nftables.d/vaultwarden.nft
+        owner: root
+        group: root
+        mode: '0644'
+      notify: Apply Vaultwarden firewall
+
+    - name: Install atomic firewall loader
+      ansible.builtin.copy:
+        src: files/apply-firewall
+        dest: /usr/local/sbin/vaultwarden-firewall
+        owner: root
+        group: root
+        mode: '0755'
+      notify: Apply Vaultwarden firewall
+
+    - name: Install persistent firewall unit
+      ansible.builtin.copy:
+        src: files/vaultwarden-firewall.service
+        dest: /etc/systemd/system/vaultwarden-firewall.service
+        owner: root
+        group: root
+        mode: '0644'
+      notify: Apply Vaultwarden firewall
+
+    - name: Enable firewall unit on boot
+      ansible.builtin.systemd_service:
+        name: vaultwarden-firewall.service
+        enabled: true
+        daemon_reload: true
+      notify: Apply Vaultwarden firewall
+
+    - name: Apply pending firewall changes after Tailscale is ready
+      ansible.builtin.meta: flush_handlers
+
+    - name: Keep firewall active
+      ansible.builtin.systemd_service:
+        name: vaultwarden-firewall.service
+        state: started
+
+    - name: Confirm firewall service is active
+      ansible.builtin.command: systemctl is-active vaultwarden-firewall.service
+      changed_when: false
+
+    - name: Copy container definitions
+      ansible.builtin.copy:
+        src: files/compose.yaml
+        dest: /opt/vaultwarden/compose.yaml
+        owner: root
+        group: root
+        mode: '0644'
+      notify: Reconcile Vaultwarden Compose
+
+    - name: Copy Caddy configuration
+      ansible.builtin.copy:
+        src: files/Caddyfile
+        dest: /opt/vaultwarden/Caddyfile
+        owner: root
+        group: root
+        mode: '0644'
+      notify: Reconcile Vaultwarden Compose
+
+    - name: Write private Compose environment
+      ansible.builtin.template:
+        src: templates/vaultwarden.env.j2
+        dest: /opt/vaultwarden/.env
+        owner: root
+        group: root
+        mode: '0600'
+      notify: Reconcile Vaultwarden Compose
+      no_log: true
+
+    - name: Install boot-time Compose unit
+      ansible.builtin.copy:
+        src: files/vaultwarden-compose.service
+        dest: /etc/systemd/system/vaultwarden-compose.service
+        owner: root
+        group: root
+        mode: '0644'
+      notify: Reconcile Vaultwarden Compose
+
+    - name: Enable boot-time Compose service
+      ansible.builtin.systemd_service:
+        name: vaultwarden-compose.service
+        enabled: true
+        daemon_reload: true
+      notify: Reconcile Vaultwarden Compose
+
+    - name: Apply pending Compose changes
+      ansible.builtin.meta: flush_handlers
+
+    - name: Keep the Compose stack started
+      ansible.builtin.systemd_service:
+        name: vaultwarden-compose.service
+        state: started
+
+    - name: Verify Compose services are running
+      ansible.builtin.command:
+        cmd: docker compose --env-file .env -f compose.yaml ps --status running --services
+        chdir: /opt/vaultwarden
+      register: compose_running
+      changed_when: false
+      failed_when: "'caddy' not in compose_running.stdout_lines or 'vaultwarden' not in compose_running.stdout_lines"
+
+    - name: Verify HTTPS responds on the Tailscale address using the configured hostname
+      ansible.builtin.command:
+        argv:
+          - curl
+          - --fail
+          - --silent
+          - --show-error
+          - --insecure
+          - --noproxy
+          - '*'
+          - --resolve
+          - "{{ vaultwarden_domain }}:443:{{ tailscale_ipv4 }}"
+          - --output
+          - /dev/null
+          - "https://{{ vaultwarden_domain }}/"
+      register: vaultwarden_https
+      changed_when: false
+      until: vaultwarden_https.rc == 0
+      retries: 10
+      delay: 3
+
+    - name: Verify Tailscale remains connected
+      ansible.builtin.command: tailscale status --json
+      register: tailscale_final_status
+      changed_when: false
+      failed_when: tailscale_final_status.rc != 0 or (tailscale_final_status.stdout | from_json).BackendState != 'Running'
+      no_log: true
+
+  handlers:
+    - name: Apply Vaultwarden firewall
+      ansible.builtin.systemd_service:
+        name: vaultwarden-firewall.service
+        state: restarted
+        daemon_reload: true
+
+    - name: Reconcile Vaultwarden Compose
+      ansible.builtin.systemd_service:
+        name: vaultwarden-compose.service
+        state: restarted
+        daemon_reload: true
+
+    - name: Restart Fail2ban
+      ansible.builtin.service:
+        name: fail2ban
+        state: restarted

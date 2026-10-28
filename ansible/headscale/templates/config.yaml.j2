@@ -1,0 +1,49 @@
+# Headscale 0.26.1; keep the control API on loopback behind Caddy.
+server_url: {{ ('https://' ~ headscale_domain) | to_json }}
+listen_addr: 127.0.0.1:8080
+metrics_listen_addr: 127.0.0.1:9090
+grpc_listen_addr: 127.0.0.1:50443
+grpc_allow_insecure: false
+noise:
+  private_key_path: /var/lib/headscale/noise_private.key
+prefixes:
+  v4: 100.64.0.0/10
+  v6: fd7a:115c:a1e0::/48
+derp:
+  server:
+    enabled: false
+  urls:
+    - https://controlplane.tailscale.com/derpmap/default
+  paths: []
+  auto_update_enabled: true
+  update_frequency: 24h
+database:
+  type: sqlite
+  sqlite:
+    path: /var/lib/headscale/db.sqlite
+    write_ahead_log: true
+policy:
+  mode: database
+dns:
+  magic_dns: true
+  base_domain: {{ tailnet_domain | to_json }}
+  override_local_dns: false
+  nameservers:
+    global: []
+{% if split_dns_servers | length > 0 %}
+    split:
+      cattoindustries.com:
+{% for server in split_dns_servers %}
+        - {{ server | to_json }}
+{% endfor %}
+{% else %}
+    split: {}
+{% endif %}
+  search_domains: []
+  extra_records: []
+unix_socket: /var/run/headscale/headscale.sock
+unix_socket_permission: '0770'
+log:
+  level: info
+logtail:
+  enabled: false

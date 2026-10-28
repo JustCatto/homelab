@@ -1,0 +1,8 @@
+{$VAULTWARDEN_DOMAIN} {
+    # Headscale-only origin: public HTTP-01/TLS-ALPN-01 cannot reach this VM.
+    # Clients must trust Caddy's internal CA (or supply a DNS-01 certificate).
+    tls internal
+    encode zstd gzip
+
+    reverse_proxy vaultwarden:8080
+}

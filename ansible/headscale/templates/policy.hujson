@@ -1,0 +1,62 @@
+// Headscale tailnet policy (HuJSON)
+// Ansible replaces YOUR_HEADSCALE_ADMIN_USER with the configured full admin user.
+// Ansible substitutes the username, then validates /etc/headscale/policy.hujson.
+// IMPORTANT: Apply from a non-tailnet recovery session; policy is default-deny.
+{
+  "groups": {
+    "group:admins": ["YOUR_HEADSCALE_ADMIN_USER"]
+  },
+  "tagOwners": {
+    "tag:core": ["group:admins"],
+    "tag:restricted": ["group:admins"],
+    "tag:unrestricted": ["group:admins"]
+  },
+  "grants": [
+    // Personal devices: shared Core services (DNS 53 and HTTPS 443 only).
+    // This intentionally DOES NOT give standard users SSH into Core devices.
+    {
+      "src": ["autogroup:member"],
+      "dst": ["tag:core"],
+      "ip": ["53", "443"]
+    },
+    // Restricted infrastructure: only Core service ports.
+    {
+      "src": ["tag:restricted"],
+      "dst": ["tag:core"],
+      "ip": ["53", "443"]
+    },
+    // User-owned devices can reach other devices owned by the same user.
+    {
+      "src": ["autogroup:member"],
+      "dst": ["autogroup:self"],
+      "ip": ["*"]
+    },
+    // Admin personal devices: ordinary SSH and all other ports everywhere
+    // on the tailnet, including other user-owned devices.
+    {
+      "src": ["group:admins"],
+      "dst": ["tag:core", "tag:restricted", "tag:unrestricted", "autogroup:member"],
+      "ip": ["*"]
+    },
+    // Unrestricted infrastructure: access to all tailnet devices.
+    {
+      "src": ["tag:unrestricted"],
+      "dst": ["tag:core", "tag:restricted", "tag:unrestricted", "autogroup:member"],
+      "ip": ["*"]
+    },
+    // Existing LAN subnet router: administration only.
+    {
+      "src": ["group:admins", "tag:unrestricted"],
+      "dst": ["192.168.1.0/24"],
+      "ip": ["*"]
+    },
+    // Allow all registered users and unrestricted devices to use exit nodes.
+    {
+      "src": ["autogroup:member", "tag:unrestricted"],
+      "dst": ["autogroup:internet"],
+      "ip": ["*"]
+    }
+  ],
+  // No Tailscale SSH rules. Normal OpenSSH remains subject to grants above.
+  "ssh": []
+}

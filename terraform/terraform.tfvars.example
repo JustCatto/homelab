@@ -1,0 +1,24 @@
+# Copy to terraform.tfvars (ignored by Git) and replace these example values.
+
+hcloud_token           = "REPLACE_WITH_HETZNER_CLOUD_API_TOKEN"
+
+# Prefer setting TF_VAR_proxmox_api_token in your shell or secret manager instead.
+proxmox_endpoint       = "https://proxmox.cattoindustries.com:8006/"
+proxmox_node_name      = "YOUR_PROXMOX_NODE"
+debian_template_vm_id  = 9000
+proxmox_datastore_id   = "local-lvm"
+proxmox_network_bridge = "vmbr0"
+vm_id                  = 210
+vm_admin_user          = "catto" # Match bootstrap TEMPLATE_USER / --ciuser.
+
+# The HomeLab public key is installed on template 9000 from /root/homelab-pubkey.pub
+# by the bootstrap script. Keep this value available for future shared-key VMs.
+# Terraform does not copy this value to the template automatically.
+shared_ssh_public_key = "ssh-ed25519 REPLACE_WITH_HOMELAB_PUBLIC_KEY homelab@host"
+
+# Vaultwarden has its OWN SSH key: Terraform replaces the clone's cloud-init
+# sshkeys setting instead of appending to the template's HomeLab key.
+vaultwarden_ssh_public_key = "ssh-ed25519 REPLACE_WITH_VAULTWARDEN_PUBLIC_KEY vaultwarden@host"
+
+# If you keep the token here instead of TF_VAR_proxmox_api_token, this file must stay untracked.
+# proxmox_api_token = "terraform@pve!homelab=REPLACE_WITH_TOKEN_SECRET"

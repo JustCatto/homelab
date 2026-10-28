@@ -1,0 +1,14 @@
+[Unit]
+Description=Vaultwarden Compose stack after Tailscale and firewall
+After=network-online.target tailscaled.service docker.service vaultwarden-firewall.service
+Requires=tailscaled.service docker.service vaultwarden-firewall.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/vaultwarden
+ExecStartPre=/usr/bin/tailscale wait --timeout=120s
+ExecStart=/usr/bin/docker compose --env-file .env -f compose.yaml up -d --remove-orphans
+
+[Install]
+WantedBy=multi-user.target

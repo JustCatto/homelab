@@ -1,0 +1,23 @@
+# Ansible-managed table; never flush the global ruleset.
+table inet vaultwarden_firewall {
+    chain input {
+        type filter hook input priority -50; policy drop;
+        ct state invalid drop
+        ct state established,related accept
+        iifname "lo" accept
+        meta l4proto icmp accept
+        meta l4proto ipv6-icmp accept
+        # The Proxmox cloud-init VM uses DHCP; retain address renewals.
+        udp sport 67 udp dport 68 accept
+        iifname "tailscale0" tcp dport { 22, 443 } accept
+        ip saddr 192.168.1.0/24 tcp dport 22 accept
+        udp dport {{ tailscale_udp_port }} accept
+    }
+
+    # Docker DNATs published ports before INPUT. Match the original destination
+    # in FORWARD so a LAN client cannot reach the Tailscale-bound 443 via DNAT.
+    chain forward {
+        type filter hook forward priority -50; policy accept;
+        iifname != "tailscale0" meta l4proto tcp ct original daddr {{ tailscale_ipv4 }} ct original proto-dst 443 drop
+    }
+}

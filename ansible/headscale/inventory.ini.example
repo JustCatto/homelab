@@ -1,0 +1,2 @@
+[headscale]
+headscale-vm ansible_host=REPLACE_WITH_VM_IP ansible_user=catto

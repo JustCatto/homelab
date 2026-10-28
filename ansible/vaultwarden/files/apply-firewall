@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Replace only the table owned by this service, in one nftables transaction.
+set -euo pipefail
+
+rules=/etc/nftables.d/vaultwarden.nft
+
+render_transaction() {
+    if nft list table inet vaultwarden_firewall >/dev/null 2>&1; then
+        printf 'delete table inet vaultwarden_firewall\n'
+    fi
+    cat "$rules"
+}
+
+render_transaction | nft --check --file -
+render_transaction | nft --file -

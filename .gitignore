@@ -1,0 +1,17 @@
+# Terraform secrets, local state and downloaded providers
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+*.tfplan
+crash.log
+
+# Ansible local inventory and secret variables
+ansible/**/inventory.ini
+ansible/**/secrets.yml
+*.retry
+
+# Local credentials / runtime data
+.env
+**/.env
