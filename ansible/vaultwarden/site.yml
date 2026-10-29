@@ -20,7 +20,9 @@
           - headscale_url is match('^https://')
           - headscale_auth_key is defined
           - headscale_auth_key | length > 0
-        fail_msg: "Provide vaultwarden_domain, an Argon2id admin hash, headscale_url and headscale_auth_key in your untracked secrets.yml."
+          - cloudflare_dns_api_token | default('') is match('^(cf(ut|at)_[A-Za-z0-9_-]{32,256}|[A-Za-z0-9_-]{35,50})$')
+          - cloudflare_dns_api_token != 'REPLACE_WITH_CLOUDFLARE_API_TOKEN'
+        fail_msg: "Provide vaultwarden_domain, an Argon2id admin hash, headscale_url, headscale_auth_key and a Cloudflare DNS API token in your untracked secrets.yml."
       no_log: true
 
   tasks:
@@ -87,7 +89,7 @@
           - "--login-server={{ headscale_url }}"
           - "--auth-key={{ headscale_auth_key }}"
           - --hostname=vaultwarden
-          - --accept-dns=false
+          - --accept-dns=true
           - --timeout=90s
       when: tailscale_status.rc != 0 or (tailscale_status.stdout | from_json).BackendState != 'Running'
       no_log: true
@@ -101,8 +103,8 @@
       delay: 5
       no_log: true
 
-    - name: Enforce hostname and disable tailnet DNS on existing nodes without re-enrolling
-      ansible.builtin.command: tailscale set --hostname=vaultwarden --accept-dns=false
+    - name: Enforce hostname and accept tailnet DNS on existing nodes without re-enrolling
+      ansible.builtin.command: tailscale set --hostname=vaultwarden --accept-dns=true
       changed_when: false
 
     - name: Retrieve assigned Tailscale IPv4
@@ -270,6 +272,16 @@
         mode: '0644'
       notify: Reconcile Vaultwarden Compose
 
+    - name: Install Cloudflare-enabled Caddy build definition
+      ansible.builtin.copy:
+        src: files/Caddy.Dockerfile
+        dest: /opt/vaultwarden/Caddy.Dockerfile
+        owner: root
+        group: root
+        mode: '0644'
+      register: caddy_dockerfile
+      notify: Reconcile Vaultwarden Compose
+
     - name: Write private Compose environment
       ansible.builtin.template:
         src: templates/vaultwarden.env.j2
@@ -279,6 +291,20 @@
         mode: '0600'
       notify: Reconcile Vaultwarden Compose
       no_log: true
+
+    - name: Check for the Cloudflare-enabled Caddy image
+      ansible.builtin.command: docker image inspect vaultwarden-caddy-cloudflare:2.10.2-v0.2.4
+      register: caddy_image
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+    - name: Build Caddy with the pinned Cloudflare DNS plugin
+      ansible.builtin.command:
+        cmd: docker compose --env-file .env -f compose.yaml build caddy
+        chdir: /opt/vaultwarden
+      when: caddy_dockerfile is changed or caddy_image.rc != 0
+      notify: Reconcile Vaultwarden Compose
 
     - name: Install boot-time Compose unit
       ansible.builtin.copy:
@@ -312,14 +338,13 @@
       changed_when: false
       failed_when: "'caddy' not in compose_running.stdout_lines or 'vaultwarden' not in compose_running.stdout_lines"
 
-    - name: Verify HTTPS responds on the Tailscale address using the configured hostname
+    - name: Verify publicly trusted HTTPS on the Tailscale address using the configured hostname
       ansible.builtin.command:
         argv:
           - curl
           - --fail
           - --silent
           - --show-error
-          - --insecure
           - --noproxy
           - '*'
           - --resolve
@@ -330,8 +355,8 @@
       register: vaultwarden_https
       changed_when: false
       until: vaultwarden_https.rc == 0
-      retries: 10
-      delay: 3
+      retries: 24
+      delay: 5
 
     - name: Verify Tailscale remains connected
       ansible.builtin.command: tailscale status --json

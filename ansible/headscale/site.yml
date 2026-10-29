@@ -20,11 +20,7 @@
           - headscale_domain != tailnet_domain
           - headscale_admin_user is defined
           - headscale_admin_user is match('^[a-zA-Z0-9_.-]+@[a-zA-Z0-9-]+(\.[a-zA-Z0-9-]+)+$')
-          - split_dns_servers is defined
-          - split_dns_servers is sequence
-          - split_dns_servers is not string
-          - split_dns_servers | reject('match', '^100\\.64\\.0\\.([1-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-4])$') | list | length == 0
-        fail_msg: 'Set a Headscale x.y.z version, distinct Headscale/MagicDNS domains, an admin user in user@domain.com format and a list of 100.64.0.0/24 split-DNS server IPs (or an empty list).'
+        fail_msg: 'Set a Headscale x.y.z version, distinct Headscale/MagicDNS domains and an admin user in user@domain.com format.'
 
   tasks:
     - name: Install package prerequisites and HTTPS reverse proxy
@@ -33,6 +29,7 @@
           - ca-certificates
           - python3-debian
           - caddy
+          - curl
         state: present
         update_cache: true
 
@@ -128,6 +125,226 @@
     - name: Apply configuration changes
       ansible.builtin.meta: flush_handlers
 
+    - name: Install Tailscale repository signing key
+      ansible.builtin.get_url:
+        url: "https://pkgs.tailscale.com/stable/debian/{{ ansible_facts['distribution_release'] }}.noarmor.gpg"
+        dest: /usr/share/keyrings/tailscale-archive-keyring.gpg
+        mode: '0644'
+
+    - name: Configure Tailscale package repository
+      ansible.builtin.deb822_repository:
+        name: tailscale
+        types: [deb]
+        uris: https://pkgs.tailscale.com/stable/debian
+        suites: "{{ ansible_facts['distribution_release'] }}"
+        components: [main]
+        signed_by: /usr/share/keyrings/tailscale-archive-keyring.gpg
+        state: present
+
+    - name: Install Tailscale
+      ansible.builtin.apt:
+        name: tailscale
+        state: present
+        update_cache: true
+
+    - name: Enable forwarding for exit-node traffic
+      ansible.builtin.copy:
+        dest: /etc/sysctl.d/90-headscale-exit-node.conf
+        content: |
+          net.ipv4.ip_forward = 1
+          net.ipv6.conf.all.forwarding = 1
+        owner: root
+        group: root
+        mode: '0644'
+      notify: Apply exit-node forwarding
+
+    - name: Apply forwarding before advertising exit routes
+      ansible.builtin.meta: flush_handlers
+
+    - name: Start Tailscale daemon
+      ansible.builtin.systemd_service:
+        name: tailscaled
+        enabled: true
+        state: started
+
+    - name: Inspect Tailscale connection
+      ansible.builtin.command: tailscale status --json
+      register: headscale_tailscale_status
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+    - name: Enrol Headscale host if not already connected
+      when: headscale_tailscale_status.rc != 0 or (headscale_tailscale_status.stdout | from_json).BackendState != 'Running'
+      block:
+        - name: Find the Headscale administrator ID
+          ansible.builtin.command: headscale users list --output json
+          register: headscale_enrol_users
+          changed_when: false
+          no_log: true
+
+        - name: Select the administrator account
+          ansible.builtin.set_fact:
+            headscale_enrol_admins: "{{ headscale_enrol_users.stdout | from_json | selectattr('name', 'equalto', headscale_admin_user) | list }}"
+          no_log: true
+
+        - name: Require exactly one Headscale administrator
+          ansible.builtin.assert:
+            that: headscale_enrol_admins | length == 1
+            fail_msg: 'Expected exactly one Headscale admin user; check headscale_admin_user before enrolling this host.'
+
+        - name: Create temporary root-only key file
+          ansible.builtin.tempfile:
+            state: file
+            path: /run
+            prefix: headscale-enrol-
+          register: headscale_enrol_file
+          no_log: true
+
+        - name: Enrol with a short-lived tagged key
+          block:
+            - name: Create single-use tag:core pre-authentication key
+              ansible.builtin.command:
+                argv:
+                  - headscale
+                  - preauthkeys
+                  - create
+                  - --user
+                  - "{{ headscale_enrol_admins[0].id | string }}"
+                  - --tags
+                  - tag:core
+                  - --expiration
+                  - 1h
+                  - --output
+                  - json
+              register: headscale_enrol_key
+              no_log: true
+
+            - name: Write key without exposing it in command arguments
+              ansible.builtin.copy:
+                content: "{{ (headscale_enrol_key.stdout | from_json).key }}"
+                dest: "{{ headscale_enrol_file.path }}"
+                owner: root
+                group: root
+                mode: '0600'
+              no_log: true
+
+            - name: Connect Headscale host as a core exit node
+              ansible.builtin.command:
+                argv:
+                  - tailscale
+                  - up
+                  - "--login-server=https://{{ headscale_domain }}"
+                  - "--auth-key=file:{{ headscale_enrol_file.path }}"
+                  - --hostname=headscale
+                  - --advertise-exit-node
+                  - --accept-dns=true
+                  - --timeout=90s
+              no_log: true
+          always:
+            - name: Remove temporary pre-authentication key
+              ansible.builtin.file:
+                path: "{{ headscale_enrol_file.path }}"
+                state: absent
+              no_log: true
+
+    - name: Wait for local Tailscale connection
+      ansible.builtin.command: tailscale status --json
+      register: headscale_tailscale_connected
+      changed_when: false
+      until: headscale_tailscale_connected.rc == 0 and (headscale_tailscale_connected.stdout | from_json).BackendState == 'Running'
+      retries: 12
+      delay: 5
+      no_log: true
+
+    - name: Get the local Tailscale IPv4
+      ansible.builtin.command: tailscale ip -4
+      register: headscale_tailscale_ip
+      changed_when: false
+
+    - name: Check that this host belongs to this Headscale server
+      ansible.builtin.command: headscale nodes list --output json
+      register: headscale_existing_nodes
+      changed_when: false
+      retries: 12
+      delay: 5
+      until: >-
+        headscale_existing_nodes.rc == 0 and
+        (headscale_existing_nodes.stdout | from_json
+        | selectattr('ip_addresses', 'defined')
+        | selectattr('ip_addresses', 'contains', headscale_tailscale_ip.stdout | trim)
+        | list | length) == 1
+      no_log: true
+
+    - name: Require an existing core identity before advertising exit routes
+      ansible.builtin.assert:
+        that: >-
+          'tag:core' in
+          ((headscale_existing_nodes.stdout | from_json
+          | selectattr('ip_addresses', 'defined')
+          | selectattr('ip_addresses', 'contains', headscale_tailscale_ip.stdout | trim)
+          | first).tags | default([]))
+        fail_msg: 'This node is not tagged tag:core. Do not automatically change an existing node identity; check its tags before advertising exit routes.'
+
+    - name: Advertise exit routes on existing connections
+      ansible.builtin.command: tailscale set --advertise-exit-node --accept-dns=true
+      changed_when: false
+
+    - name: Locate this node and its advertised exit routes
+      ansible.builtin.command: headscale nodes list --output json
+      register: headscale_local_nodes
+      changed_when: false
+      retries: 12
+      delay: 5
+      until: >-
+        headscale_local_nodes.rc == 0 and
+        (headscale_local_nodes.stdout | from_json
+        | selectattr('ip_addresses', 'defined')
+        | selectattr('ip_addresses', 'contains', headscale_tailscale_ip.stdout | trim)
+        | selectattr('available_routes', 'defined')
+        | selectattr('available_routes', 'contains', '0.0.0.0/0')
+        | selectattr('available_routes', 'contains', '::/0')
+        | list | length) == 1
+      no_log: true
+
+    - name: Select the local Headscale node
+      ansible.builtin.set_fact:
+        headscale_local_node: "{{ headscale_local_nodes.stdout | from_json | selectattr('ip_addresses', 'defined') | selectattr('ip_addresses', 'contains', headscale_tailscale_ip.stdout | trim) | first }}"
+      no_log: true
+
+    - name: Require the core tag before enabling exit routes
+      ansible.builtin.assert:
+        that: "'tag:core' in (headscale_local_node.tags | default([]))"
+        fail_msg: 'This host is already enrolled without tag:core. Check its node ID and migrate/tag it deliberately before enabling exit routes.'
+
+    - name: Approve this node's exit routes without dropping existing approvals
+      ansible.builtin.command:
+        argv:
+          - headscale
+          - nodes
+          - approve-routes
+          - --identifier
+          - "{{ headscale_local_node.id | string }}"
+          - --routes
+          - "{{ ((headscale_local_node.approved_routes | default([])) + ['0.0.0.0/0', '::/0']) | unique | join(',') }}"
+      when: "'0.0.0.0/0' not in (headscale_local_node.approved_routes | default([])) or '::/0' not in (headscale_local_node.approved_routes | default([]))"
+
+    - name: Verify exit routes are approved
+      ansible.builtin.command: headscale nodes list --output json
+      register: headscale_approved_nodes
+      changed_when: false
+      until: >-
+        headscale_approved_nodes.rc == 0 and
+        (headscale_approved_nodes.stdout | from_json
+        | selectattr('id', 'equalto', headscale_local_node.id)
+        | selectattr('approved_routes', 'defined')
+        | selectattr('approved_routes', 'contains', '0.0.0.0/0')
+        | selectattr('approved_routes', 'contains', '::/0')
+        | list | length) == 1
+      retries: 12
+      delay: 5
+      no_log: true
+
     - name: Check Headscale service
       ansible.builtin.command: systemctl is-active headscale
       changed_when: false
@@ -137,6 +354,9 @@
       changed_when: false
 
   handlers:
+    - name: Apply exit-node forwarding
+      ansible.builtin.command: sysctl -p /etc/sysctl.d/90-headscale-exit-node.conf
+
     - name: Restart Headscale
       ansible.builtin.systemd_service:
         name: headscale

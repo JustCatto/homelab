@@ -25,9 +25,16 @@ variable "proxmox_node_name" {
   type        = string
 }
 
-variable "debian_template_vm_id" {
-  description = "VM ID of a Debian cloud-init template with qemu-guest-agent installed, an scsi0 disk, and cloud-init drive."
+variable "proxmox1_debian_template_vm_id" {
+  description = "Debian cloud-init template ID on proxmox1; used by the Vaultwarden clone."
   type        = number
+  default     = 9001
+}
+
+variable "proxmox2_debian_template_vm_id" {
+  description = "Debian cloud-init template ID on proxmox2, available for VMs placed there."
+  type        = number
+  default     = 9002
 }
 
 variable "proxmox_datastore_id" {
@@ -43,7 +50,7 @@ variable "proxmox_network_bridge" {
 }
 
 variable "shared_ssh_public_key" {
-  description = "HomeLab public key installed on template 9000 via bootstrap; reserved for future VMs. Vaultwarden instead uses vaultwarden_ssh_public_key."
+  description = "HomeLab public key installed on the Debian templates via bootstrap; reserved for shared-key VMs. Vaultwarden instead uses vaultwarden_ssh_public_key."
   type        = string
 }
 

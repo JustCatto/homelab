@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Run on the target Proxmox node as root. This creates VM template 9000 once.
+# Run on the target Proxmox node as root. Override VM_ID for node-specific templates.
 set -euo pipefail
 
-VM_ID=9000
+VM_ID=${VM_ID:-9000}
 IMAGE_NAME=debian-13-generic-amd64.qcow2
 IMAGE_BASE_URL=https://cloud.debian.org/images/cloud/trixie/latest
 STORAGE=${STORAGE:-local-lvm}
@@ -10,6 +10,11 @@ BRIDGE=${BRIDGE:-vmbr0}
 TEMPLATE_USER=${TEMPLATE_USER:-catto}
 # HomeLab public key stored on the Proxmox node; clones may override it.
 SSH_PUBLIC_KEY_FILE=${SSH_PUBLIC_KEY_FILE:-/root/homelab-pubkey.pub}
+
+if [[ ! "$VM_ID" =~ ^[1-9][0-9]{2,}$ ]]; then
+  echo 'VM_ID must be a valid numeric Proxmox VM ID.' >&2
+  exit 1
+fi
 
 if (( EUID != 0 )); then
   echo 'Run this script as root on the Proxmox node.' >&2

@@ -1,0 +1,11 @@
+# Cloudflare account API token scoped to this zone (Zone:Read, DNS:Read, DNS:Edit).
+# Put the real value only in ignored terraform.tfvars or supply TF_VAR_cloudflare_api_token.
+cloudflare_api_token = "REPLACE_WITH_CLOUDFLARE_ACCOUNT_API_TOKEN"
+
+# Use the actual public Headscale address for tailscale, and Vaultwarden's
+# Tailscale IPv4 for bitwarden. DNS-only records expose these IPs publicly.
+# Import records that already exist in Cloudflare before applying (see README).
+cattoindustries_records = {
+  bitwarden = { type = "A", value = "REPLACE_WITH_VAULTWARDEN_TAILSCALE_IPV4" }
+  tailscale = { type = "A", value = "REPLACE_WITH_HEADSCALE_PUBLIC_IPV4" }
+}

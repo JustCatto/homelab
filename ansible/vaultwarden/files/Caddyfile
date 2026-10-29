@@ -1,7 +1,12 @@
+{
+    auto_https disable_redirects
+}
+
 {$VAULTWARDEN_DOMAIN} {
-    # Headscale-only origin: public HTTP-01/TLS-ALPN-01 cannot reach this VM.
-    # Clients must trust Caddy's internal CA (or supply a DNS-01 certificate).
-    tls internal
+    tls {
+        dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+        resolvers 1.1.1.1 8.8.8.8
+    }
     encode zstd gzip
 
     reverse_proxy vaultwarden:8080

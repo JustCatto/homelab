@@ -18,6 +18,7 @@ table inet vaultwarden_firewall {
     # in FORWARD so a LAN client cannot reach the Tailscale-bound 443 via DNAT.
     chain forward {
         type filter hook forward priority -50; policy accept;
-        iifname != "tailscale0" meta l4proto tcp ct original daddr {{ tailscale_ipv4 }} ct original proto-dst 443 drop
+        ct state established,related accept
+        iifname != "tailscale0" meta l4proto tcp ct original ip daddr {{ tailscale_ipv4 }} ct original proto-dst 443 drop
     }
 }

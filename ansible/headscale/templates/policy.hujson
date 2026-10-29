@@ -12,18 +12,18 @@
     "tag:unrestricted": ["group:admins"]
   },
   "grants": [
-    // Personal devices: shared Core services (DNS 53 and HTTPS 443 only).
+    // Personal devices: shared Core HTTPS only.
     // This intentionally DOES NOT give standard users SSH into Core devices.
     {
       "src": ["autogroup:member"],
       "dst": ["tag:core"],
-      "ip": ["53", "443"]
+      "ip": ["443"]
     },
-    // Restricted infrastructure: only Core service ports.
+    // Restricted infrastructure: only Core HTTPS.
     {
       "src": ["tag:restricted"],
       "dst": ["tag:core"],
-      "ip": ["53", "443"]
+      "ip": ["443"]
     },
     // User-owned devices can reach other devices owned by the same user.
     {

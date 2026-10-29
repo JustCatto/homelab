@@ -6,7 +6,7 @@ resource "proxmox_virtual_environment_vm" "vaultwarden" {
   on_boot   = true
 
   clone {
-    vm_id     = var.debian_template_vm_id
+    vm_id     = var.proxmox1_debian_template_vm_id
     node_name = var.proxmox_node_name
     full      = true
   }

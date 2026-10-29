@@ -1,6 +1,6 @@
 services:
   vaultwarden:
-    image: vaultwarden/server:1.34.3
+    image: vaultwarden/server:1.37.4
     restart: unless-stopped
     user: "1000:1000"
     environment:
@@ -28,12 +28,16 @@ services:
         max-file: "3"
 
   caddy:
-    image: caddy:2.10.2-alpine
+    image: vaultwarden-caddy-cloudflare:2.10.2-v0.2.4
+    build:
+      context: .
+      dockerfile: Caddy.Dockerfile
     restart: unless-stopped
     depends_on:
       - vaultwarden
     environment:
       VAULTWARDEN_DOMAIN: "${VAULTWARDEN_DOMAIN}"
+      CLOUDFLARE_API_TOKEN: "${CLOUDFLARE_DNS_API_TOKEN:?Cloudflare DNS token required}"
     ports:
       - "${TAILSCALE_IPV4:?Tailscale IPv4 required}:443:443"
     volumes:
